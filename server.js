@@ -43,30 +43,34 @@ function generateDeck() {
     return deck;
 }
 
-function checkWinCondition(boardState) {
-    const directions = [[1, 0], [0, 1], [1, 1], [1, -1]];
+function countSequences(boardState, team) {
+    let count = 0;
+    const directions = [[0, 1], [1, 0], [1, 1], [1, -1]]; // Right, Down, Down-Right, Down-Left
+
     for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 10; c++) {
-            let index = r * 10 + c;
-            let team = boardState[index].team;
-            if (boardState[index].card === 'FREE' || !team) continue;
-
             for (let [dr, dc] of directions) {
-                let count = 0;
+                let isSequence = true;
                 for (let i = 0; i < 5; i++) {
-                    let nr = r + dr * i;
-                    let nc = c + dc * i;
-                    if (nr < 0 || nr >= 10 || nc < 0 || nc >= 10) break;
-                    let nIndex = nr * 10 + nc;
-                    let nTeam = boardState[nIndex].team;
-                    if (nTeam === team || boardState[nIndex].card === 'FREE') count++;
-                    else break;
+                    let nr = r + dr * i, nc = c + dc * i;
+                    if (nr < 0 || nr >= 10 || nc < 0 || nc >= 10) { isSequence = false; break; }
+                    let cell = boardState[nr * 10 + nc];
+                    if (cell.team !== team && cell.card !== 'FREE') { isSequence = false; break; }
                 }
-                if (count === 5) return team;
+                
+                if (isSequence) {
+                    // Make sure this isn't just a continuation of an existing line (prevents 6-in-a-row counting as 2)
+                    let pr = r - dr, pc = c - dc;
+                    if (pr >= 0 && pr < 10 && pc >= 0 && pc < 10) {
+                        let prevCell = boardState[pr * 10 + pc];
+                        if (prevCell.team === team || prevCell.card === 'FREE') continue; // Skip it
+                    }
+                    count++;
+                }
             }
         }
     }
-    return null;
+    return count;
 }
 
 io.on('connection', (socket) => {
@@ -189,7 +193,7 @@ io.on('connection', (socket) => {
     socket.on('playMove', ({ roomId, username, boardIndex, cardPlayed }) => {
         const game = activeGames[roomId];
         if (!game) return;
-
+        if (game.gameOver) return;
         const player = game.players[username];
         if (game.currentTurn !== player.team || !player.hand.includes(cardPlayed)) return;
 
@@ -214,9 +218,21 @@ io.on('connection', (socket) => {
             let nextIndex = (currentIndex + 1) % teamsPlaying.length;
             game.currentTurn = teamsPlaying[nextIndex];
         }        
-        
-        let winner = checkWinCondition(game.boardState);
-        if (winner) io.to(roomId).emit('gameOver', winner);
+        // Calculate scores for all teams
+        const scores = {
+            'red': countSequences(game.boardState, 'red'),
+            'blue': countSequences(game.boardState, 'blue'),
+            'green': countSequences(game.boardState, 'green')
+        };
+        let winner = null;
+        if (scores.red >= 2) winner = 'red';
+        if (scores.blue >= 2) winner = 'blue';
+        if (scores.green >= 2) winner = 'green';
+    
+        if (winner) {
+            game.gameOver = true; // Locks the game
+            io.to(roomId).emit('gameOver', winner);
+        }
 
         Object.keys(game.players).forEach(name => {
             const p = game.players[name];
@@ -226,7 +242,9 @@ io.on('connection', (socket) => {
                 turn: game.currentTurn, 
                 me: p,
                 lastDiscard: cardPlayed,
-                cardsLeft: game.deck.length
+                cardsLeft: game.deck.length,
+                scores: scores,            // Send the scores!
+                isGameOver: game.gameOver  // Send the lock state!
             });
         });
     });
