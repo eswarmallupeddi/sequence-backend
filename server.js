@@ -76,41 +76,56 @@ function checkWinCondition(boardState) {
 
 io.on('connection', (socket) => {
     
-    // 1. Join a specific Room
+    // 1. Join a specific Room (Updated to default new players to 'blue')
     socket.on('joinRoom', ({ roomId, nickname }) => {
         socket.join(roomId);
         
-        // If room doesn't exist, create it
         if (!activeGames[roomId]) {
             activeGames[roomId] = {
                 host: socket.id,
                 players: {},
                 boardState: [],
                 deck: [],
-                currentTurn: 'blue', // Default starting team
+                currentTurn: 'blue',
                 isLive: false
             };
         }
         
         const game = activeGames[roomId];
         
-        // Add new player or update socket ID if reconnecting
         if (game.players[nickname]) {
             game.players[nickname].socketId = socket.id;
         } else {
             game.players[nickname] = { 
                 socketId: socket.id, 
-                team: 'unassigned', // Will be updated via the drag-and-drop lobby
+                team: 'blue', // Default them to blue so they show up instantly!
                 hand: [] 
             };
         }
         
-        // Broadcast lobby update to ONLY this room
         io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(name => ({
             name, 
             team: game.players[name].team,
             isHost: game.host === game.players[name].socketId
         })));
+    });
+
+    // 2. Handle Team Randomization
+    socket.on('randomizeTeams', ({ roomId }) => {
+        const game = activeGames[roomId];
+        if (!game) return;
+
+        const availableTeams = ['blue', 'red', 'green'];
+        Object.keys(game.players).forEach(name => {
+            // Randomly assign one of the 3 teams
+            const randomTeam = availableTeams[Math.floor(Math.random() * availableTeams.length)];
+            game.players[name].team = randomTeam;
+        });
+
+        io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(name => ({
+            name, team: game.players[name].team, isHost: game.host === game.players[name].socketId
+        })));
+    });
 
         // If they refreshed mid-game, send them the board immediately
         if (game.isLive) {
