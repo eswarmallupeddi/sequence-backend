@@ -28,11 +28,7 @@ const STANDARD_BOARD_LAYOUT = [
 const activeGames = {}; 
 
 function generateBoard() {
-    return STANDARD_BOARD_LAYOUT.map(card => ({ 
-        card: card, 
-        team: null, 
-        locked: false // New property added!
-    }));
+    return STANDARD_BOARD_LAYOUT.map(card => ({ card: card, team: null, locked: false }));
 }
 
 function generateDeck() {
@@ -53,7 +49,7 @@ function countSequences(boardState, team) {
         for (let c = 0; c < 10; c++) {
             for (let [dr, dc] of directions) {
                 let isSequence = true;
-                let sequenceIndices = []; // Track the chips in this sequence
+                let sequenceIndices = [];
                 
                 for (let i = 0; i < 5; i++) {
                     let nr = r + dr * i, nc = c + dc * i;
@@ -72,7 +68,6 @@ function countSequences(boardState, team) {
                     }
                     count++;
                     
-                    // LOCK THE CHIPS SO A JACK CANNOT REMOVE THEM
                     sequenceIndices.forEach(idx => {
                         if (boardState[idx].card !== 'FREE') {
                             boardState[idx].locked = true;
@@ -88,12 +83,13 @@ function countSequences(boardState, team) {
 io.on('connection', (socket) => {
     console.log(`🟢 SERVER: A player connected! ID: ${socket.id}`);
 
-    socket.on('joinRoom', ({ roomId, nickname }) => {
-        console.log(`🔵 SERVER: ${nickname} requested to join room ${roomId}`);
+    // Modified to capture gameType for Multi-Game architecture
+    socket.on('joinRoom', ({ roomId, nickname, gameType }) => {
         socket.join(roomId);
         
         if (!activeGames[roomId]) {
             activeGames[roomId] = {
+                gameType: gameType || 'sequence', // Future proofing for other games!
                 host: socket.id,
                 players: {},
                 boardState: [],
@@ -111,20 +107,14 @@ io.on('connection', (socket) => {
         if (game.players[nickname]) {
             game.players[nickname].socketId = socket.id;
         } else {
-            game.players[nickname] = { 
-                socketId: socket.id, 
-                team: 'blue', 
-                hand: [] 
-            };
+            game.players[nickname] = { socketId: socket.id, team: 'blue', hand: [] };
         }
         
         io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(name => ({
-            name, 
-            team: game.players[name].team,
-            isHost: game.host === game.players[name].socketId
+            name, team: game.players[name].team, isHost: game.host === game.players[name].socketId
         })));
 
-        if (game.isLive) {
+        if (game.isLive && game.gameType === 'sequence') {
             socket.emit('gameState', {
                 board: game.boardState,
                 hand: game.players[nickname].hand,
@@ -166,9 +156,8 @@ io.on('connection', (socket) => {
 
     socket.on('startGame', ({ roomId }) => {
         const game = activeGames[roomId];
-        if (!game || game.isLive) return;
+        if (!game || game.isLive || game.gameType !== 'sequence') return;
         
-        // Interleaved Turn Order (e.g. Blue1 -> Red1 -> Green1 -> Blue2)
         let playersByTeam = {};
         Object.keys(game.players).forEach(username => {
             let t = game.players[username].team;
@@ -188,6 +177,8 @@ io.on('connection', (socket) => {
             });
         }
         
+        if (game.turnOrder.length === 0) return; // Prevent crash if empty room
+
         game.currentTurnIndex = 0;
         game.currentTurnPlayer = game.turnOrder[0];
         game.isLive = true;
@@ -195,6 +186,7 @@ io.on('connection', (socket) => {
         game.deck = generateDeck();
         
         Object.values(game.players).forEach(p => {
+            p.hand = []; // Ensure clear hand
             for (let i = 0; i < 7; i++) {
                 if (game.deck.length > 0) p.hand.push(game.deck.pop());
             }
@@ -216,10 +208,9 @@ io.on('connection', (socket) => {
 
     socket.on('playMove', ({ roomId, username, boardIndex, cardPlayed }) => {
         const game = activeGames[roomId];
-        if (!game || game.gameOver) return;
+        if (!game || game.gameOver || game.gameType !== 'sequence') return;
 
         const player = game.players[username];
-        
         if (game.currentTurnPlayer !== username || !player.hand.includes(cardPlayed)) return;
 
         const space = game.boardState[boardIndex];
@@ -229,15 +220,16 @@ io.on('connection', (socket) => {
         if ((space.card === cardPlayed || isTwoEyedJack) && !space.team && space.card !== 'FREE') {
             game.boardState[boardIndex].team = player.team;
         } else if (isOneEyedJack && space.team && space.team !== player.team && space.card !== 'FREE') {
-            if (space.locked) return;
+            if (space.locked) return; // Protect completed sequences
             game.boardState[boardIndex].team = null;
         } else return; 
 
-        // Find the exact index of the ONE card they played, and remove only that one
+        // Correctly remove exactly ONE instance of the played card
         const cardIndexInHand = player.hand.indexOf(cardPlayed);
         if (cardIndexInHand !== -1) {
             player.hand.splice(cardIndexInHand, 1);
         }
+
         if (game.deck.length > 0) player.hand.push(game.deck.pop());
 
         game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length;
@@ -274,6 +266,41 @@ io.on('connection', (socket) => {
             });
         });
     });
+
+    socket.on('rematch', ({ roomId }) => {
+        const game = activeGames[roomId];
+        if (!game || !game.gameOver || game.gameType !== 'sequence') return;
+
+        game.gameOver = false;
+        game.boardState = generateBoard();
+        game.deck = generateDeck();
+
+        // Advance starting turn for fairness
+        game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length;
+        game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
+
+        Object.values(game.players).forEach(p => {
+            p.hand = [];
+            for (let i = 0; i < 7; i++) {
+                if (game.deck.length > 0) p.hand.push(game.deck.pop());
+            }
+        });
+
+        Object.keys(game.players).forEach(name => {
+            const p = game.players[name];
+            io.to(p.socketId).emit('gameState', {
+                board: game.boardState,
+                hand: p.hand,
+                turnPlayer: game.currentTurnPlayer,
+                turnTeam: game.players[game.currentTurnPlayer].team,
+                me: p,
+                lastDiscard: null,
+                cardsLeft: game.deck.length,
+                scores: { 'red': 0, 'blue': 0, 'green': 0 },
+                isGameOver: false
+            });
+        });
+    });
 });
 
-server.listen(3000, () => console.log('Sequence Server Running with Rooms!'));
+server.listen(3000, () => console.log('Multi-Game Server Running!'));
