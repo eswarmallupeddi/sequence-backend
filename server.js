@@ -83,17 +83,17 @@ function countSequences(boardState, team) {
 io.on('connection', (socket) => {
     console.log(`🟢 SERVER: A player connected! ID: ${socket.id}`);
 
-    // Modified to capture gameType for Multi-Game architecture
     socket.on('joinRoom', ({ roomId, nickname, gameType }) => {
         socket.join(roomId);
         
         if (!activeGames[roomId]) {
             activeGames[roomId] = {
-                gameType: gameType || 'sequence', // Future proofing for other games!
+                gameType: gameType || 'sequence',
                 host: socket.id,
                 players: {},
                 boardState: [],
                 deck: [],
+                discardPile: [],
                 turnOrder: [],
                 currentTurnIndex: 0,
                 currentTurnPlayer: null,
@@ -122,6 +122,8 @@ io.on('connection', (socket) => {
                 turnTeam: game.players[game.currentTurnPlayer].team,
                 me: game.players[nickname],
                 isGameOver: game.gameOver,
+                lastDiscards: game.discardPile,
+                cardsLeft: game.deck.length,
                 scores: {
                     'red': countSequences(game.boardState, 'red'),
                     'blue': countSequences(game.boardState, 'blue'),
@@ -177,16 +179,17 @@ io.on('connection', (socket) => {
             });
         }
         
-        if (game.turnOrder.length === 0) return; // Prevent crash if empty room
+        if (game.turnOrder.length === 0) return; 
 
         game.currentTurnIndex = 0;
         game.currentTurnPlayer = game.turnOrder[0];
         game.isLive = true;
         game.boardState = generateBoard();
         game.deck = generateDeck();
+        game.discardPile = [];
         
         Object.values(game.players).forEach(p => {
-            p.hand = []; // Ensure clear hand
+            p.hand = []; 
             for (let i = 0; i < 7; i++) {
                 if (game.deck.length > 0) p.hand.push(game.deck.pop());
             }
@@ -201,6 +204,8 @@ io.on('connection', (socket) => {
                 turnTeam: game.players[game.currentTurnPlayer].team,
                 me: p,
                 isGameOver: false,
+                lastDiscards: game.discardPile,
+                cardsLeft: game.deck.length,
                 scores: { 'red': 0, 'blue': 0, 'green': 0 }
             });
         });
@@ -220,14 +225,19 @@ io.on('connection', (socket) => {
         if ((space.card === cardPlayed || isTwoEyedJack) && !space.team && space.card !== 'FREE') {
             game.boardState[boardIndex].team = player.team;
         } else if (isOneEyedJack && space.team && space.team !== player.team && space.card !== 'FREE') {
-            if (space.locked) return; // Protect completed sequences
+            if (space.locked) return; 
             game.boardState[boardIndex].team = null;
         } else return; 
 
-        // Correctly remove exactly ONE instance of the played card
         const cardIndexInHand = player.hand.indexOf(cardPlayed);
         if (cardIndexInHand !== -1) {
             player.hand.splice(cardIndexInHand, 1);
+        }
+
+        // Add to discard pile, keep max 3 history
+        game.discardPile.push(cardPlayed);
+        if (game.discardPile.length > 3) {
+            game.discardPile.shift();
         }
 
         if (game.deck.length > 0) player.hand.push(game.deck.pop());
@@ -259,7 +269,7 @@ io.on('connection', (socket) => {
                 turnPlayer: game.currentTurnPlayer, 
                 turnTeam: game.players[game.currentTurnPlayer].team, 
                 me: p,
-                lastDiscard: cardPlayed,
+                lastDiscards: game.discardPile,
                 cardsLeft: game.deck.length,
                 scores: scores,
                 isGameOver: game.gameOver
@@ -274,8 +284,8 @@ io.on('connection', (socket) => {
         game.gameOver = false;
         game.boardState = generateBoard();
         game.deck = generateDeck();
+        game.discardPile = [];
 
-        // Advance starting turn for fairness
         game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length;
         game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
 
@@ -294,7 +304,7 @@ io.on('connection', (socket) => {
                 turnPlayer: game.currentTurnPlayer,
                 turnTeam: game.players[game.currentTurnPlayer].team,
                 me: p,
-                lastDiscard: null,
+                lastDiscards: game.discardPile,
                 cardsLeft: game.deck.length,
                 scores: { 'red': 0, 'blue': 0, 'green': 0 },
                 isGameOver: false
