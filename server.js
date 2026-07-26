@@ -217,7 +217,11 @@ io.on('connection', (socket) => {
             game.boardState[boardIndex].team = null;
         } else return; 
 
-        player.hand = player.hand.filter(c => c !== cardPlayed);
+        // Find the exact index of the ONE card they played, and remove only that one
+        const cardIndexInHand = player.hand.indexOf(cardPlayed);
+        if (cardIndexInHand !== -1) {
+            player.hand.splice(cardIndexInHand, 1);
+        }
         if (game.deck.length > 0) player.hand.push(game.deck.pop());
 
         game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length;
