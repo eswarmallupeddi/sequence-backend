@@ -28,7 +28,11 @@ const STANDARD_BOARD_LAYOUT = [
 const activeGames = {}; 
 
 function generateBoard() {
-    return STANDARD_BOARD_LAYOUT.map(card => ({ card: card, team: null }));
+    return STANDARD_BOARD_LAYOUT.map(card => ({ 
+        card: card, 
+        team: null, 
+        locked: false // New property added!
+    }));
 }
 
 function generateDeck() {
@@ -49,11 +53,15 @@ function countSequences(boardState, team) {
         for (let c = 0; c < 10; c++) {
             for (let [dr, dc] of directions) {
                 let isSequence = true;
+                let sequenceIndices = []; // Track the chips in this sequence
+                
                 for (let i = 0; i < 5; i++) {
                     let nr = r + dr * i, nc = c + dc * i;
                     if (nr < 0 || nr >= 10 || nc < 0 || nc >= 10) { isSequence = false; break; }
-                    let cell = boardState[nr * 10 + nc];
+                    let index = nr * 10 + nc;
+                    let cell = boardState[index];
                     if (cell.team !== team && cell.card !== 'FREE') { isSequence = false; break; }
+                    sequenceIndices.push(index);
                 }
                 
                 if (isSequence) {
@@ -63,6 +71,13 @@ function countSequences(boardState, team) {
                         if (prevCell.team === team || prevCell.card === 'FREE') continue; 
                     }
                     count++;
+                    
+                    // LOCK THE CHIPS SO A JACK CANNOT REMOVE THEM
+                    sequenceIndices.forEach(idx => {
+                        if (boardState[idx].card !== 'FREE') {
+                            boardState[idx].locked = true;
+                        }
+                    });
                 }
             }
         }
@@ -214,6 +229,7 @@ io.on('connection', (socket) => {
         if ((space.card === cardPlayed || isTwoEyedJack) && !space.team && space.card !== 'FREE') {
             game.boardState[boardIndex].team = player.team;
         } else if (isOneEyedJack && space.team && space.team !== player.team && space.card !== 'FREE') {
+            if (space.locked) return;
             game.boardState[boardIndex].team = null;
         } else return; 
 
