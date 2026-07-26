@@ -75,9 +75,11 @@ function checkWinCondition(boardState) {
 }
 
 io.on('connection', (socket) => {
-    
+    console.log(`🟢 SERVER: A player connected! ID: ${socket.id}`); // <--- ADD THIS
+
     // 1. Join a specific Room (Updated to default new players to 'blue')
     socket.on('joinRoom', ({ roomId, nickname }) => {
+        console.log(`🔵 SERVER: ${nickname} requested to join room ${roomId}`); // <--- ADD THIS
         socket.join(roomId);
         
         if (!activeGames[roomId]) {
