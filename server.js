@@ -90,29 +90,59 @@ function checkWinCondition() {
 generateBoard();
 generateDeck();
 
+let isGameStarted = false;
+
 io.on('connection', (socket) => {
-    // Rejoin / Join Logic
+    // 1. Join Lobby / Reconnection
     socket.on('joinGame', (data) => {
         const { username, team } = data;
         
-        // If player already exists (reconnection), just update socket ID
         if (players[username]) {
-            players[username].socketId = socket.id;
+            players[username].socketId = socket.id; // Reconnect
         } else {
-            // New player
-            let hand = [];
-            for (let i = 0; i < 7; i++) hand.push(deck.pop());
-            players[username] = { socketId: socket.id, team, hand };
+            players[username] = { socketId: socket.id, team: team, hand: [] }; // New Player
         }
         
-        socket.emit('gameState', { 
-            board: boardState, 
-            hand: players[username].hand, 
-            turn: currentTurn,
-            me: players[username]
+        // Broadcast the updated lobby list to everyone
+        const lobbyData = Object.keys(players).map(k => ({ name: k, team: players[k].team }));
+        io.emit('lobbyUpdate', lobbyData);
+
+        // If they refreshed and the game is already live, jump them straight back in
+        if (isGameStarted) {
+            socket.emit('gameState', { 
+                board: boardState, 
+                hand: players[username].hand, 
+                turn: currentTurn,
+                me: players[username]
+            });
+        }
+    });
+
+    // 2. Start Game Command
+    socket.on('startGame', () => {
+        if (isGameStarted) return;
+        isGameStarted = true;
+
+        // Deal 7 cards to every player in the lobby
+        Object.values(players).forEach(p => {
+            for (let i = 0; i < 7; i++) {
+                if (deck.length > 0) p.hand.push(deck.pop());
+            }
+        });
+
+        // Send the official game state to all players to reveal the board
+        Object.keys(players).forEach(name => {
+            const p = players[name];
+            io.to(p.socketId).emit('gameState', {
+                board: boardState,
+                hand: p.hand,
+                turn: currentTurn,
+                me: p
+            });
         });
     });
 
+    // 3. Gameplay Logic (Paste your existing socket.on('playMove') logic here exactly as it was)
     socket.on('playMove', (data) => {
         const { username, boardIndex, cardPlayed } = data;
         const player = players[username];
@@ -124,35 +154,26 @@ io.on('connection', (socket) => {
         const isTwoEyedJack = cardPlayed === '♣-J' || cardPlayed === '♦-J';
         const isOneEyedJack = cardPlayed === '♠-J' || cardPlayed === '♥-J';
 
-        // Standard Play or 2-Eyed Jack (Wild)
         if ((space.card === cardPlayed || isTwoEyedJack) && !space.team && space.card !== 'FREE') {
             boardState[boardIndex].team = player.team;
-        } 
-        // 1-Eyed Jack (Remove opponent chip)
-        else if (isOneEyedJack && space.team && space.team !== player.team && space.card !== 'FREE') {
+        } else if (isOneEyedJack && space.team && space.team !== player.team && space.card !== 'FREE') {
             boardState[boardIndex].team = null;
         } else {
-            return; // Invalid move
+            return; 
         }
 
-        // Remove card from hand, draw new one
         player.hand = player.hand.filter(c => c !== cardPlayed);
         if (deck.length > 0) player.hand.push(deck.pop());
 
-        // Change Turn
         currentTurn = currentTurn === 'red' ? 'blue' : 'red';
         
         let winner = checkWinCondition();
         if (winner) io.emit('gameOver', winner);
 
-        // Update everyone
         Object.keys(players).forEach(name => {
             const p = players[name];
             io.to(p.socketId).emit('gameState', {
-                board: boardState,
-                hand: p.hand,
-                turn: currentTurn,
-                me: p
+                board: boardState, hand: p.hand, turn: currentTurn, me: p
             });
         });
     });
