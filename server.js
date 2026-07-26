@@ -15,27 +15,22 @@ const JACKS = ['♠-J', '♥-J', '♣-J', '♦-J'];
 // The master object holding all active games by Room ID
 const activeGames = {}; 
 
+// Replace the old generateBoard function with this:
+const STANDARD_BOARD_LAYOUT = [
+    'FREE', '♠-2', '♠-3', '♠-4', '♠-5', '♠-6', '♠-7', '♠-8', '♠-9', 'FREE',
+    '♣-6', '♣-5', '♣-4', '♣-3', '♣-2', '♥-A', '♥-K', '♥-Q', '♥-10', '♠-10',
+    '♣-7', '♠-A', '♦-2', '♦-3', '♦-4', '♦-5', '♦-6', '♦-7', '♥-9', '♠-Q',
+    '♣-8', '♠-K', '♣-6', '♣-5', '♣-4', '♣-3', '♣-2', '♦-8', '♥-8', '♠-K',
+    '♣-9', '♠-Q', '♣-7', '♥-6', '♥-5', '♥-4', '♥-A', '♦-9', '♥-7', '♠-A',
+    '♣-10', '♠-10', '♣-8', '♥-7', '♥-2', '♥-3', '♥-K', '♦-10', '♥-6', '♦-2',
+    '♣-Q', '♠-9', '♣-9', '♥-8', '♥-9', '♥-10', '♥-Q', '♦-Q', '♥-5', '♦-3',
+    '♣-K', '♠-8', '♣-10', '♣-Q', '♣-K', '♣-A', '♦-A', '♦-K', '♥-4', '♦-4',
+    '♣-A', '♠-7', '♠-6', '♠-5', '♠-4', '♠-3', '♠-2', '♥-2', '♥-3', '♦-5',
+    'FREE', '♦-A', '♦-K', '♦-Q', '♦-10', '♦-9', '♦-8', '♦-7', '♦-6', 'FREE'
+];
+
 function generateBoard() {
-    let boardCards = [];
-    SUITS.forEach(suit => {
-        RANKS.forEach(rank => {
-            boardCards.push(`${suit}-${rank}`);
-            boardCards.push(`${suit}-${rank}`);
-        });
-    });
-    boardCards.sort(() => Math.random() - 0.5); // Shuffle
-    
-    let boardState = Array(100).fill(null);
-    let cardIndex = 0;
-    for (let i = 0; i < 100; i++) {
-        if (i === 0 || i === 9 || i === 90 || i === 99) {
-            boardState[i] = { card: 'FREE', team: null };
-        } else {
-            boardState[i] = { card: boardCards[cardIndex], team: null };
-            cardIndex++;
-        }
-    }
-    return boardState;
+    return STANDARD_BOARD_LAYOUT.map(card => ({ card: card, team: null }));
 }
 
 function generateDeck() {
@@ -165,7 +160,8 @@ io.on('connection', (socket) => {
     socket.on('startGame', ({ roomId }) => {
         const game = activeGames[roomId];
         if (!game || game.isLive) return;
-        
+        const activeTeams = [...new Set(Object.values(game.players).map(p => p.team))];
+        game.currentTurn = activeTeams[0] || 'blue'; // Start with whoever is first
         game.isLive = true;
         game.boardState = generateBoard();
         game.deck = generateDeck();
@@ -212,7 +208,12 @@ io.on('connection', (socket) => {
         if (game.deck.length > 0) player.hand.push(game.deck.pop());
 
         // Toggle turn
-        game.currentTurn = game.currentTurn === 'blue' ? 'red' : 'blue';
+        const teamsPlaying = [...new Set(Object.values(game.players).map(p => p.team))];
+        if (teamsPlaying.length > 0) {
+            let currentIndex = teamsPlaying.indexOf(game.currentTurn);
+            let nextIndex = (currentIndex + 1) % teamsPlaying.length;
+            game.currentTurn = teamsPlaying[nextIndex];
+        }        
         
         let winner = checkWinCondition(game.boardState);
         if (winner) io.to(roomId).emit('gameOver', winner);
