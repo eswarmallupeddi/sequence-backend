@@ -75,59 +75,44 @@ function checkWinCondition(boardState) {
 }
 
 io.on('connection', (socket) => {
-    console.log(`🟢 SERVER: A player connected! ID: ${socket.id}`); // <--- ADD THIS
+    console.log(`🟢 SERVER: A player connected! ID: ${socket.id}`);
 
-    // 1. Join a specific Room (Updated to default new players to 'blue')
+    // 1. Join a specific Room
     socket.on('joinRoom', ({ roomId, nickname }) => {
-        console.log(`🔵 SERVER: ${nickname} requested to join room ${roomId}`); // <--- ADD THIS
+        console.log(`🔵 SERVER: ${nickname} requested to join room ${roomId}`);
         socket.join(roomId);
         
+        // If room doesn't exist, create it
         if (!activeGames[roomId]) {
             activeGames[roomId] = {
                 host: socket.id,
                 players: {},
                 boardState: [],
                 deck: [],
-                currentTurn: 'blue',
+                currentTurn: 'blue', // Default starting team
                 isLive: false
             };
         }
         
         const game = activeGames[roomId];
         
+        // Add new player or update socket ID if reconnecting
         if (game.players[nickname]) {
             game.players[nickname].socketId = socket.id;
         } else {
             game.players[nickname] = { 
                 socketId: socket.id, 
-                team: 'blue', // Default them to blue so they show up instantly!
+                team: 'blue', // Default to blue so they show up instantly in the UI
                 hand: [] 
             };
         }
         
+        // Broadcast lobby update to ONLY this room
         io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(name => ({
             name, 
             team: game.players[name].team,
             isHost: game.host === game.players[name].socketId
         })));
-    });
-
-    // 2. Handle Team Randomization
-    socket.on('randomizeTeams', ({ roomId }) => {
-        const game = activeGames[roomId];
-        if (!game) return;
-
-        const availableTeams = ['blue', 'red', 'green'];
-        Object.keys(game.players).forEach(name => {
-            // Randomly assign one of the 3 teams
-            const randomTeam = availableTeams[Math.floor(Math.random() * availableTeams.length)];
-            game.players[name].team = randomTeam;
-        });
-
-        io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(name => ({
-            name, team: game.players[name].team, isHost: game.host === game.players[name].socketId
-        })));
-    });
 
         // If they refreshed mid-game, send them the board immediately
         if (game.isLive) {
@@ -140,25 +125,43 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 2. Handle Drag-and-Drop Team Assignments
+    // 2. Handle Team Randomization
+    socket.on('randomizeTeams', ({ roomId }) => {
+        const game = activeGames[roomId];
+        if (!game) return;
+
+        const availableTeams = ['blue', 'red', 'green'];
+        Object.keys(game.players).forEach(name => {
+            const randomTeam = availableTeams[Math.floor(Math.random() * availableTeams.length)];
+            game.players[name].team = randomTeam;
+        });
+
+        io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(name => ({
+            name, 
+            team: game.players[name].team, 
+            isHost: game.host === game.players[name].socketId
+        })));
+    });
+
+    // 3. Handle Manual Team Updates (Drag-and-Drop or Clicking)
     socket.on('updateTeams', ({ roomId, updatedPlayers }) => {
         const game = activeGames[roomId];
         if (!game) return;
         
-        // Update the server state with the new team selections
         updatedPlayers.forEach(p => {
             if (game.players[p.name]) {
                 game.players[p.name].team = p.team;
             }
         });
         
-        // Sync the changes to everyone in the lobby
         io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(name => ({
-            name, team: game.players[name].team
+            name, 
+            team: game.players[name].team,
+            isHost: game.host === game.players[name].socketId
         })));
     });
 
-    // 3. Start the Game
+    // 4. Start the Game
     socket.on('startGame', ({ roomId }) => {
         const game = activeGames[roomId];
         if (!game || game.isLive) return;
@@ -186,7 +189,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 4. Play a Move
+    // 5. Play a Move
     socket.on('playMove', ({ roomId, username, boardIndex, cardPlayed }) => {
         const game = activeGames[roomId];
         if (!game) return;
@@ -208,13 +211,12 @@ io.on('connection', (socket) => {
         player.hand = player.hand.filter(c => c !== cardPlayed);
         if (game.deck.length > 0) player.hand.push(game.deck.pop());
 
-        // Toggle turn (Assumes red/blue teams, you can expand this to include green later)
+        // Toggle turn
         game.currentTurn = game.currentTurn === 'blue' ? 'red' : 'blue';
         
         let winner = checkWinCondition(game.boardState);
         if (winner) io.to(roomId).emit('gameOver', winner);
 
-        // Update everyone with the new board and last discarded card
         Object.keys(game.players).forEach(name => {
             const p = game.players[name];
             io.to(p.socketId).emit('gameState', {
