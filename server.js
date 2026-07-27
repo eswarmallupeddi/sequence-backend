@@ -29,13 +29,8 @@ function hasNonMillPieces(board, icon) { for (let i = 0; i < 24; i++) { if (boar
 
 // --- PHASE RACE ENGINE ---
 function generatePhase10Deck() {
-    const colors = ['red', 'blue', 'green', 'yellow'];
-    let deck = [];
-    for (let i = 0; i < 2; i++) {
-        colors.forEach(color => {
-            for (let v = 1; v <= 12; v++) deck.push({ color, value: v });
-        });
-    }
+    const colors = ['red', 'blue', 'green', 'yellow']; let deck = [];
+    for (let i = 0; i < 2; i++) { colors.forEach(color => { for (let v = 1; v <= 12; v++) deck.push({ color, value: v }); }); }
     for (let i = 0; i < 8; i++) deck.push({ color: 'black', value: 'Wild' });
     for (let i = 0; i < 4; i++) deck.push({ color: 'black', value: 'Skip' });
     return deck.sort(() => Math.random() - 0.5);
@@ -83,12 +78,11 @@ io.on('connection', (socket) => {
         if (game.turnOrder.length === 0) return; 
         game.currentTurnIndex = 0; game.currentTurnPlayer = game.turnOrder[0]; game.isLive = true; game.gameOver = false;
 
-        // Init Game Specifics
         if (game.gameType === 'sequence') {
             game.boardState = generateSeqBoard(); game.deck = generateSeqDeck(); game.discardPile = [];
             Object.values(game.players).forEach(p => { p.hand = []; for(let i=0; i<7; i++) p.hand.push(game.deck.pop()); });
         } else if (game.gameType === 'uno') {
-            game.unoDeck = generateUnoDeck(); game.direction = 1;
+            game.unoDeck = generateUnoDeck(); game.direction = 1; game.drawStack = 0;
             Object.values(game.players).forEach(p => { p.hand = []; for(let i=0; i<7; i++) p.hand.push(game.unoDeck.pop()); });
             let top = game.unoDeck.pop(); while(top.color === 'black') { game.unoDeck.unshift(top); top = game.unoDeck.pop(); }
             game.topCard = top;
@@ -99,6 +93,7 @@ io.on('connection', (socket) => {
         } else if (game.gameType === 'phase10') {
             game.phaseDeck = generatePhase10Deck();
             game.phaseDiscard = [game.phaseDeck.pop()];
+            game.laidPhases = {}; 
             Object.values(game.players).forEach(p => {
                 p.hand = []; p.phase = 1; p.hasLaidPhase = false; p.hasDrawn = false;
                 for(let i=0; i<10; i++) p.hand.push(game.phaseDeck.pop());
@@ -137,17 +132,25 @@ io.on('connection', (socket) => {
         if (p.hand.length === 0) { game.gameOver = true; io.to(roomId).emit('gameOver', `${username} Wins!`); emitGameState(roomId); return; }
         
         let steps = 1;
-        if (card.value === 'Rev') { game.direction *= -1; if(game.turnOrder.length === 2) steps = 2; }
+        if (card.value === '+2') game.drawStack += 2;
+        else if (card.value === '+4') game.drawStack += 4;
+        else if (card.value === 'Rev') { game.direction *= -1; if(game.turnOrder.length === 2) steps = 2; }
         else if (card.value === 'Skip') steps = 2;
-        else if (card.value === '+2') { steps = 2; forceDrawUno(game, 2); }
-        else if (card.value === '+4') { steps = 2; forceDrawUno(game, 4); }
-        advanceUnoTurn(game, steps); emitGameState(roomId);
+        
+        let dir = game.direction * steps; game.currentTurnIndex = (game.currentTurnIndex + dir + (game.turnOrder.length * 5)) % game.turnOrder.length; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
+        emitGameState(roomId);
     });
 
     socket.on('drawUnoCard', ({ roomId, username }) => {
         const game = activeGames[roomId]; if (!game || game.gameOver || game.gameType !== 'uno' || game.currentTurnPlayer !== username) return;
-        if(game.unoDeck.length === 0) game.unoDeck = generateUnoDeck(); 
-        game.players[username].hand.push(game.unoDeck.pop()); advanceUnoTurn(game, 1); emitGameState(roomId);
+        let cardsToDraw = game.drawStack > 0 ? game.drawStack : 1;
+        for (let i = 0; i < cardsToDraw; i++) {
+            if(game.unoDeck.length === 0) game.unoDeck = generateUnoDeck(); 
+            game.players[username].hand.push(game.unoDeck.pop()); 
+        }
+        game.drawStack = 0;
+        game.currentTurnIndex = (game.currentTurnIndex + game.direction + game.turnOrder.length) % game.turnOrder.length; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
+        emitGameState(roomId);
     });
 
     // --- DAADI MOVES ---
@@ -184,51 +187,36 @@ io.on('connection', (socket) => {
     socket.on('drawPhase10', ({ roomId, username, source }) => {
         const game = activeGames[roomId]; if (!game || game.gameOver || game.gameType !== 'phase10' || game.currentTurnPlayer !== username) return;
         const p = game.players[username]; if (p.hasDrawn) return;
-
         if (source === 'deck') {
             if (game.phaseDeck.length === 0) game.phaseDeck = generatePhase10Deck();
             p.hand.push(game.phaseDeck.pop());
         } else if (source === 'discard' && game.phaseDiscard.length > 0) {
             p.hand.push(game.phaseDiscard.pop());
         }
-        p.hasDrawn = true;
-        emitGameState(roomId);
+        p.hasDrawn = true; emitGameState(roomId);
     });
 
     socket.on('layPhase10', ({ roomId, username, selectedIndices }) => {
         const game = activeGames[roomId]; if (!game || game.gameOver || game.gameType !== 'phase10' || game.currentTurnPlayer !== username) return;
         const p = game.players[username]; if (!p.hasDrawn || p.hasLaidPhase) return;
-
-        // Standard validation check: ensure player selected enough cards
         if (selectedIndices.length >= 6) {
-            p.hasLaidPhase = true;
-            // Remove laid cards from hand
-            selectedIndices.sort((a,b) => b - a).forEach(idx => {
-                if (idx >= 0 && idx < p.hand.length) p.hand.splice(idx, 1);
-            });
+            p.hasLaidPhase = true; let laidCards = [];
+            selectedIndices.sort((a,b) => b - a).forEach(idx => { if (idx >= 0 && idx < p.hand.length) laidCards.push(p.hand.splice(idx, 1)[0]); });
+            game.laidPhases[username] = laidCards.reverse();
         }
         emitGameState(roomId);
     });
 
-    socket.on('discardPhase10', ({ roomId, username, cardIndex }) => {
+    socket.on('hitPhase10', ({ roomId, username, targetUser, cardIndex }) => {
         const game = activeGames[roomId]; if (!game || game.gameOver || game.gameType !== 'phase10' || game.currentTurnPlayer !== username) return;
-        const p = game.players[username]; if (!p.hasDrawn) return;
-
-        if (cardIndex >= 0 && cardIndex < p.hand.length) {
-            const discarded = p.hand.splice(cardIndex, 1)[0];
-            game.phaseDiscard.push(discarded);
-            p.hasDrawn = false;
-
-            // Round End Check
+        const p = game.players[username]; if (!p.hasDrawn || !p.hasLaidPhase) return;
+        if (cardIndex >= 0 && cardIndex < p.hand.length && game.laidPhases[targetUser]) {
+            game.laidPhases[targetUser].push(p.hand.splice(cardIndex, 1)[0]);
             if (p.hand.length === 0) {
-                if (p.hasLaidPhase) p.phase++;
-                if (p.phase > 10) {
-                    game.gameOver = true;
-                    io.to(roomId).emit('gameOver', `${username} completed Phase 10 and Wins!`);
-                } else {
-                    // Deal Next Round
-                    game.phaseDeck = generatePhase10Deck();
-                    game.phaseDiscard = [game.phaseDeck.pop()];
+                p.phase++;
+                if (p.phase > 10) { game.gameOver = true; io.to(roomId).emit('gameOver', `${username} completed Phase 10 and Wins!`); } 
+                else {
+                    game.phaseDeck = generatePhase10Deck(); game.phaseDiscard = [game.phaseDeck.pop()]; game.laidPhases = {};
                     Object.values(game.players).forEach(player => {
                         if (player.hasLaidPhase && player !== p) player.phase++;
                         player.hand = []; player.hasLaidPhase = false; player.hasDrawn = false;
@@ -236,16 +224,33 @@ io.on('connection', (socket) => {
                     });
                 }
             }
-            game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length;
-            game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
         }
         emitGameState(roomId);
     });
 
-    // --- HELPERS & ROUTER ---
-    function forceDrawUno(game, amount) { const nextIdx = (game.currentTurnIndex + game.direction + game.turnOrder.length) % game.turnOrder.length; const target = game.players[game.turnOrder[nextIdx]]; for(let i=0; i<amount; i++) { if(game.unoDeck.length === 0) game.unoDeck = generateUnoDeck(); target.hand.push(game.unoDeck.pop()); } }
-    function advanceUnoTurn(game, steps) { let dir = game.direction * steps; game.currentTurnIndex = (game.currentTurnIndex + dir + (game.turnOrder.length * 5)) % game.turnOrder.length; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex]; }
+    socket.on('discardPhase10', ({ roomId, username, cardIndex }) => {
+        const game = activeGames[roomId]; if (!game || game.gameOver || game.gameType !== 'phase10' || game.currentTurnPlayer !== username) return;
+        const p = game.players[username]; if (!p.hasDrawn) return;
+        if (cardIndex >= 0 && cardIndex < p.hand.length) {
+            game.phaseDiscard.push(p.hand.splice(cardIndex, 1)[0]); p.hasDrawn = false;
+            if (p.hand.length === 0) {
+                if (p.hasLaidPhase) p.phase++;
+                if (p.phase > 10) { game.gameOver = true; io.to(roomId).emit('gameOver', `${username} completed Phase 10 and Wins!`); } 
+                else {
+                    game.phaseDeck = generatePhase10Deck(); game.phaseDiscard = [game.phaseDeck.pop()]; game.laidPhases = {};
+                    Object.values(game.players).forEach(player => {
+                        if (player.hasLaidPhase && player !== p) player.phase++;
+                        player.hand = []; player.hasLaidPhase = false; player.hasDrawn = false;
+                        for(let i=0; i<10; i++) player.hand.push(game.phaseDeck.pop());
+                    });
+                }
+            }
+            game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
+        }
+        emitGameState(roomId);
+    });
 
+    // --- SHARED ROUTER ---
     socket.on('rematch', ({ roomId }) => {
         const game = activeGames[roomId]; if (!game || !game.gameOver) return;
         game.gameOver = false;
@@ -255,7 +260,7 @@ io.on('connection', (socket) => {
             game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
             Object.values(game.players).forEach(p => { p.hand = []; for(let i=0; i<7; i++) p.hand.push(game.deck.pop()); });
         } else if (game.gameType === 'uno') {
-            game.unoDeck = generateUnoDeck(); game.direction = 1;
+            game.unoDeck = generateUnoDeck(); game.direction = 1; game.drawStack = 0;
             game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
             Object.values(game.players).forEach(p => { p.hand = []; for(let i=0; i<7; i++) p.hand.push(game.unoDeck.pop()); });
             let top = game.unoDeck.pop(); while(top.color === 'black') { game.unoDeck.unshift(top); top = game.unoDeck.pop(); }
@@ -266,7 +271,7 @@ io.on('connection', (socket) => {
             game.removingPlayer = null;
             game.currentTurnIndex = (game.currentTurnIndex + 1) % 2; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
         } else if (game.gameType === 'phase10') {
-            game.phaseDeck = generatePhase10Deck(); game.phaseDiscard = [game.phaseDeck.pop()];
+            game.phaseDeck = generatePhase10Deck(); game.phaseDiscard = [game.phaseDeck.pop()]; game.laidPhases = {};
             game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
             Object.values(game.players).forEach(p => {
                 p.hand = []; p.phase = 1; p.hasLaidPhase = false; p.hasDrawn = false;
@@ -286,17 +291,13 @@ io.on('connection', (socket) => {
                 payload = { ...payload, board: game.boardState, hand: p.hand, turnTeam: game.players[game.currentTurnPlayer].team, me: p, lastDiscards: game.discardPile, cardsLeft: game.deck.length, scores: { 'red': countSequences(game.boardState, 'red'), 'blue': countSequences(game.boardState, 'blue'), 'green': countSequences(game.boardState, 'green') }};
             } else if (game.gameType === 'uno') {
                 let pList = Object.keys(game.players).map(n => ({ name: n, cardCount: game.players[n].hand.length }));
-                payload = { ...payload, hand: p.hand, topCard: game.topCard, playerList: pList };
+                payload = { ...payload, hand: p.hand, topCard: game.topCard, playerList: pList, drawStack: game.drawStack };
             } else if (game.gameType === 'daadi') {
-                let pList = game.turnOrder.map(n => ({ 
-                    name: n, icon: game.daadiPlayers[n].icon, 
-                    unplaced: game.daadiPlayers[n].unplaced,
-                    onBoard: game.daadiBoard.filter(c => c === game.daadiPlayers[n].icon).length
-                }));
+                let pList = game.turnOrder.map(n => ({ name: n, icon: game.daadiPlayers[n].icon, unplaced: game.daadiPlayers[n].unplaced, onBoard: game.daadiBoard.filter(c => c === game.daadiPlayers[n].icon).length }));
                 payload = { ...payload, board: game.daadiBoard, removingPlayer: game.removingPlayer, playersList: pList, me: { name: name, ...game.daadiPlayers[name] } };
             } else if (game.gameType === 'phase10') {
                 let pList = Object.keys(game.players).map(n => ({ name: n, phase: game.players[n].phase, hasLaidPhase: game.players[n].hasLaidPhase }));
-                payload = { ...payload, hand: p.hand, topCard: game.phaseDiscard[game.phaseDiscard.length - 1], playerList: pList, me: { name: name, ...p } };
+                payload = { ...payload, hand: p.hand, topCard: game.phaseDiscard[game.phaseDiscard.length - 1], laidPhases: game.laidPhases, playerList: pList, me: { name: name, ...p } };
             }
             io.to(p.socketId).emit('gameState', payload);
         });
