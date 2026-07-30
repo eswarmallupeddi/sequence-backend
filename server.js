@@ -45,7 +45,7 @@ io.on('connection', (socket) => {
     // Log Cloudflare Headers for basic traffic analysis (IP & Country)
     const clientIp = socket.handshake.headers['cf-connecting-ip'] || socket.handshake.headers['x-forwarded-for'] || socket.handshake.address; 
     const clientCountry = socket.handshake.headers['cf-ipcountry'] || 'Unknown';
-    console.log(`📡 New Connection: IP [${clientIp}] Country [${clientCountry}] ID [${socket.id}]`);
+    console.log(`📡 Connection: IP [${clientIp}] Country [${clientCountry}] ID [${socket.id}]`);
     
     socket.on('joinRoom', ({ roomId, nickname, gameType }) => {
         socket.join(roomId);
