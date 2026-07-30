@@ -20,9 +20,13 @@ function countSequences(boardState, team) { let count = 0; const dirs = [[0, 1],
 // --- COLOR MATCH ENGINE ---
 function generateUnoDeck() { const colors = ['red', 'blue', 'green', 'yellow']; const values = ['0','1','1','2','2','3','3','4','4','5','5','6','6','7','7','8','8','9','9','Skip','Skip','Rev','Rev','+2','+2']; let deck = []; colors.forEach(color => { values.forEach(val => deck.push({ color, value: val })); }); for(let i=0; i<4; i++) { deck.push({ color: 'black', value: 'Wild' }); deck.push({ color: 'black', value: '+4' }); } return deck.sort(() => Math.random() - 0.5); }
 
-// --- DAADI ENGINE ---
+// --- DAADI ENGINE (9 & 11 Men's Morris) ---
 const DAADI_MILLS = [ [0,1,2],[2,3,4],[4,5,6],[6,7,0],[8,9,10],[10,11,12],[12,13,14],[14,15,8],[16,17,18],[18,19,20],[20,21,22],[22,23,16],[1,9,17],[3,11,19],[5,13,21],[7,15,23] ];
-const DAADI_ADJ = { 0:[1,7], 1:[0,2,9], 2:[1,3], 3:[2,4,11], 4:[3,5], 5:[4,6,13], 6:[5,7], 7:[0,6,15], 8:[9,15], 9:[1,8,10,17], 10:[9,11], 11:[3,10,12,19], 12:[11,13], 13:[5,12,14,21], 14:[13,15], 15:[7,8,14,23], 16:[17,23], 17:[9,16,18], 18:[17,19], 19:[11,18,20], 20:[19,21], 21:[13,20,22], 22:[21,23], 23:[15,16,22] };
+// Adjacency for 9-Coin (Orthogonal only)
+const DAADI_ADJ_9 = { 0:[1,7], 1:[0,2,9], 2:[1,3], 3:[2,4,11], 4:[3,5], 5:[4,6,13], 6:[5,7], 7:[0,6,15], 8:[9,15], 9:[1,8,10,17], 10:[9,11], 11:[3,10,12,19], 12:[11,13], 13:[5,12,14,21], 14:[13,15], 15:[7,8,14,23], 16:[17,23], 17:[9,16,18], 18:[17,19], 19:[11,18,20], 20:[19,21], 21:[13,20,22], 22:[21,23], 23:[15,16,22] };
+// Adjacency for 11-Coin (Orthogonal + Diagonal Corners)
+const DAADI_ADJ_11 = { ...DAADI_ADJ_9, 0:[1,7,8], 2:[1,3,10], 4:[3,5,12], 6:[5,7,14], 8:[9,15,0,16], 10:[9,11,2,18], 12:[11,13,4,20], 14:[13,15,6,22], 16:[17,23,8], 18:[17,19,10], 20:[19,21,12], 22:[21,23,14] };
+
 function checkDaadiMill(board, index, icon) { for (let mill of DAADI_MILLS) { if (mill.includes(index)) { if (board[mill[0]] === icon && board[mill[1]] === icon && board[mill[2]] === icon) return true; } } return false; }
 function isDaadiPieceInMill(board, index, icon) { return checkDaadiMill(board, index, icon); }
 function hasNonMillPieces(board, icon) { for (let i = 0; i < 24; i++) { if (board[i] === icon && !isDaadiPieceInMill(board, i, icon)) return true; } return false; }
@@ -36,8 +40,13 @@ function generatePhase10Deck() {
     return deck.sort(() => Math.random() - 0.5);
 }
 
-// --- SOCKET LOGIC ---
+// --- SOCKET LOGIC & ANALYTICS ---
 io.on('connection', (socket) => {
+    
+    // Log Cloudflare Headers for basic traffic analysis (IP & Country)
+    const clientIp = socket.handshake.headers['cf-connecting-ip'] || socket.handshake.headers['x-forwarded-for'] || socket.handshake.address; //
+    const clientCountry = socket.handshake.headers['cf-ipcountry'] || 'Unknown';
+    console.log(`📡 New Connection: IP [${clientIp}] Country [${clientCountry}] ID [${socket.id}]`);
     
     socket.on('joinRoom', ({ roomId, nickname, gameType }) => {
         socket.join(roomId);
@@ -67,7 +76,7 @@ io.on('connection', (socket) => {
             let pts = {}; Object.keys(game.players).forEach(u => { let t = game.players[u].team; if(!pts[t]) pts[t]=[]; pts[t].push(u); });
             let max = Math.max(...Object.keys(pts).map(t => pts[t].length), 0);
             for (let i=0; i<max; i++) Object.keys(pts).forEach(t => { if(pts[t][i]) game.turnOrder.push(pts[t][i]); });
-        } else if (game.gameType === 'daadi') {
+        } else if (game.gameType.includes('daadi')) {
             const playerNames = Object.keys(game.players);
             if (playerNames.length < 2) return; 
             game.turnOrder = [playerNames[0], playerNames[1]];
@@ -78,6 +87,7 @@ io.on('connection', (socket) => {
         if (game.turnOrder.length === 0) return; 
         game.currentTurnIndex = 0; game.currentTurnPlayer = game.turnOrder[0]; game.isLive = true; game.gameOver = false;
 
+        // Init Game Specifics
         if (game.gameType === 'sequence') {
             game.boardState = generateSeqBoard(); game.deck = generateSeqDeck(); game.discardPile = [];
             Object.values(game.players).forEach(p => { p.hand = []; for(let i=0; i<7; i++) p.hand.push(game.deck.pop()); });
@@ -86,18 +96,16 @@ io.on('connection', (socket) => {
             Object.values(game.players).forEach(p => { p.hand = []; for(let i=0; i<7; i++) p.hand.push(game.unoDeck.pop()); });
             let top = game.unoDeck.pop(); while(top.color === 'black') { game.unoDeck.unshift(top); top = game.unoDeck.pop(); }
             game.topCard = top;
-        } else if (game.gameType === 'daadi') {
+        } else if (game.gameType.includes('daadi')) {
             game.daadiBoard = Array(24).fill(null);
-            game.daadiPlayers = { [game.turnOrder[0]]: { icon: '🦁', unplaced: 9 }, [game.turnOrder[1]]: { icon: '🐯', unplaced: 9 } };
+            const coins = game.gameType === 'daadi11' ? 11 : 9; // Support both 9 and 11 coin variants
+            const p1Icon = game.gameType === 'daadi11' ? '🐺' : '🦁';
+            const p2Icon = game.gameType === 'daadi11' ? '🦊' : '🐯';
+            game.daadiPlayers = { [game.turnOrder[0]]: { icon: p1Icon, unplaced: coins }, [game.turnOrder[1]]: { icon: p2Icon, unplaced: coins } };
             game.removingPlayer = null;
         } else if (game.gameType === 'phase10') {
-            game.phaseDeck = generatePhase10Deck();
-            game.phaseDiscard = [game.phaseDeck.pop()];
-            game.laidPhases = {}; 
-            Object.values(game.players).forEach(p => {
-                p.hand = []; p.phase = 1; p.hasLaidPhase = false; p.hasDrawn = false;
-                for(let i=0; i<10; i++) p.hand.push(game.phaseDeck.pop());
-            });
+            game.phaseDeck = generatePhase10Deck(); game.phaseDiscard = [game.phaseDeck.pop()]; game.laidPhases = {}; 
+            Object.values(game.players).forEach(p => { p.hand = []; p.phase = 1; p.hasLaidPhase = false; p.hasDrawn = false; for(let i=0; i<10; i++) p.hand.push(game.phaseDeck.pop()); });
         }
         emitGameState(roomId);
     });
@@ -155,9 +163,10 @@ io.on('connection', (socket) => {
 
     // --- DAADI MOVES ---
     socket.on('playDaadiMove', ({ roomId, username, action, index, fromIndex }) => {
-        const game = activeGames[roomId]; if (!game || game.gameOver || game.gameType !== 'daadi' || game.currentTurnPlayer !== username) return;
+        const game = activeGames[roomId]; if (!game || game.gameOver || !game.gameType.includes('daadi') || game.currentTurnPlayer !== username) return;
         const myData = game.daadiPlayers[username]; const myIcon = myData.icon;
         const oppName = game.turnOrder.find(n => n !== username); const oppIcon = game.daadiPlayers[oppName].icon;
+        const adjMap = game.gameType === 'daadi11' ? DAADI_ADJ_11 : DAADI_ADJ_9;
 
         if (action === 'remove') {
             if (game.removingPlayer !== username || game.daadiBoard[index] !== oppIcon) return;
@@ -175,7 +184,7 @@ io.on('connection', (socket) => {
         } else if (action === 'move') {
             if (myData.unplaced > 0 || game.daadiBoard[fromIndex] !== myIcon || game.daadiBoard[index]) return;
             let myPiecesOnBoard = game.daadiBoard.filter(c => c === myIcon).length;
-            if (myPiecesOnBoard > 3 && !DAADI_ADJ[fromIndex].includes(index)) return;
+            if (myPiecesOnBoard > 3 && !adjMap[fromIndex].includes(index)) return; // Flying logic applies if 3 pieces left
             game.daadiBoard[fromIndex] = null; game.daadiBoard[index] = myIcon;
             if (checkDaadiMill(game.daadiBoard, index, myIcon)) game.removingPlayer = username;
             else { game.currentTurnIndex = (game.currentTurnIndex + 1) % 2; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex]; }
@@ -265,9 +274,10 @@ io.on('connection', (socket) => {
             Object.values(game.players).forEach(p => { p.hand = []; for(let i=0; i<7; i++) p.hand.push(game.unoDeck.pop()); });
             let top = game.unoDeck.pop(); while(top.color === 'black') { game.unoDeck.unshift(top); top = game.unoDeck.pop(); }
             game.topCard = top;
-        } else if (game.gameType === 'daadi') {
+        } else if (game.gameType.includes('daadi')) {
             game.daadiBoard = Array(24).fill(null);
-            game.daadiPlayers[game.turnOrder[0]].unplaced = 9; game.daadiPlayers[game.turnOrder[1]].unplaced = 9;
+            const coins = game.gameType === 'daadi11' ? 11 : 9;
+            game.daadiPlayers[game.turnOrder[0]].unplaced = coins; game.daadiPlayers[game.turnOrder[1]].unplaced = coins;
             game.removingPlayer = null;
             game.currentTurnIndex = (game.currentTurnIndex + 1) % 2; game.currentTurnPlayer = game.turnOrder[game.currentTurnIndex];
         } else if (game.gameType === 'phase10') {
@@ -292,7 +302,7 @@ io.on('connection', (socket) => {
             } else if (game.gameType === 'uno') {
                 let pList = Object.keys(game.players).map(n => ({ name: n, cardCount: game.players[n].hand.length }));
                 payload = { ...payload, hand: p.hand, topCard: game.topCard, playerList: pList, drawStack: game.drawStack };
-            } else if (game.gameType === 'daadi') {
+            } else if (game.gameType.includes('daadi')) {
                 let pList = game.turnOrder.map(n => ({ name: n, icon: game.daadiPlayers[n].icon, unplaced: game.daadiPlayers[n].unplaced, onBoard: game.daadiBoard.filter(c => c === game.daadiPlayers[n].icon).length }));
                 payload = { ...payload, board: game.daadiBoard, removingPlayer: game.removingPlayer, playersList: pList, me: { name: name, ...game.daadiPlayers[name] } };
             } else if (game.gameType === 'phase10') {
