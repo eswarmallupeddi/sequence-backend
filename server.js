@@ -8,6 +8,10 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
+// --- HARDCODED SECURITY PASSCODE ---
+// Set via Oracle environment variable GAME_PASSCODE or edit directly here:
+const SERVER_PASSCODE = process.env.GAME_PASSCODE || "family123";
+
 const activeGames = {}; 
 
 // --- SEQUENCE ENGINE ---
@@ -47,24 +51,49 @@ io.on('connection', (socket) => {
     const clientCountry = socket.handshake.headers['cf-ipcountry'] || 'Unknown';
     console.log(`📡 Connection: IP [${clientIp}] Country [${clientCountry}] ID [${socket.id}]`);
     
-    socket.on('joinRoom', ({ roomId, nickname, gameType }) => {
+    socket.on('joinRoom', ({ roomId, nickname, gameType, passcode, avatarUrl }) => {
+        // Enforce Passcode Security Check
+        if (passcode !== SERVER_PASSCODE) {
+            return socket.emit('passcodeError', '❌ Invalid Keyphrase! Access Denied.');
+        }
+
         socket.join(roomId);
         if (!activeGames[roomId]) {
             activeGames[roomId] = { gameType: gameType || 'sequence', host: socket.id, players: {}, turnOrder: [], currentTurnIndex: 0, currentTurnPlayer: null, isLive: false, gameOver: false };
         }
         const game = activeGames[roomId];
         game.gameType = gameType; 
-        if (game.players[nickname]) game.players[nickname].socketId = socket.id;
-        else game.players[nickname] = { socketId: socket.id, team: 'blue', hand: [], phase: 1, hasLaidPhase: false, hasDrawn: false, pos: 0 };
         
-        io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(n => ({ name: n, team: game.players[n].team, isHost: game.host === game.players[n].socketId })));
+        if (game.players[nickname]) {
+            game.players[nickname].socketId = socket.id;
+            if(avatarUrl) game.players[nickname].avatarUrl = avatarUrl;
+        } else {
+            game.players[nickname] = { 
+                socketId: socket.id, 
+                team: 'blue', 
+                hand: [], 
+                phase: 1, 
+                hasLaidPhase: false, 
+                hasDrawn: false, 
+                pos: 0,
+                avatarUrl: avatarUrl || 'https://upload.wikimedia.org/wikipedia/commons/d/d4/Card_back_01.svg'
+            };
+        }
+        
+        io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(n => ({ 
+            name: n, 
+            team: game.players[n].team, 
+            avatarUrl: game.players[n].avatarUrl,
+            isHost: game.host === game.players[n].socketId 
+        })));
+        
         if (game.isLive) emitGameState(roomId);
     });
 
     socket.on('updateTeams', ({ roomId, updatedPlayers }) => {
         const game = activeGames[roomId]; if (!game) return;
         updatedPlayers.forEach(p => { if (game.players[p.name]) game.players[p.name].team = p.team; });
-        io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(n => ({ name: n, team: game.players[n].team, isHost: game.host === game.players[n].socketId })));
+        io.to(roomId).emit('lobbyUpdate', Object.keys(game.players).map(n => ({ name: n, team: game.players[n].team, avatarUrl: game.players[n].avatarUrl, isHost: game.host === game.players[n].socketId })));
     });
 
     socket.on('startGame', ({ roomId }) => {
@@ -338,19 +367,19 @@ io.on('connection', (socket) => {
             if (game.gameType === 'sequence') {
                 payload = { ...payload, board: game.boardState, hand: p.hand, turnTeam: game.players[game.currentTurnPlayer].team, me: p, lastDiscards: game.discardPile, cardsLeft: game.deck.length, scores: { 'red': countSequences(game.boardState, 'red'), 'blue': countSequences(game.boardState, 'blue'), 'green': countSequences(game.boardState, 'green') }};
             } else if (game.gameType === 'uno') {
-                let pList = Object.keys(game.players).map(n => ({ name: n, cardCount: game.players[n].hand.length }));
+                let pList = Object.keys(game.players).map(n => ({ name: n, avatarUrl: game.players[n].avatarUrl, cardCount: game.players[n].hand.length }));
                 payload = { ...payload, hand: p.hand, topCard: game.topCard, playerList: pList, drawStack: game.drawStack };
             } else if (game.gameType.includes('daadi')) {
-                let pList = game.turnOrder.map(n => ({ name: n, icon: game.daadiPlayers[n].icon, unplaced: game.daadiPlayers[n].unplaced, onBoard: game.daadiBoard.filter(c => c === game.daadiPlayers[n].icon).length }));
+                let pList = game.turnOrder.map(n => ({ name: n, avatarUrl: game.players[n].avatarUrl, icon: game.daadiPlayers[n].icon, unplaced: game.daadiPlayers[n].unplaced, onBoard: game.daadiBoard.filter(c => c === game.daadiPlayers[n].icon).length }));
                 payload = { ...payload, board: game.daadiBoard, removingPlayer: game.removingPlayer, playersList: pList, me: { name: name, ...game.daadiPlayers[name] } };
             } else if (game.gameType === 'phase10') {
-                let pList = Object.keys(game.players).map(n => ({ name: n, phase: game.players[n].phase, hasLaidPhase: game.players[n].hasLaidPhase }));
+                let pList = Object.keys(game.players).map(n => ({ name: n, avatarUrl: game.players[n].avatarUrl, phase: game.players[n].phase, hasLaidPhase: game.players[n].hasLaidPhase }));
                 payload = { ...payload, hand: p.hand, topCard: game.phaseDiscard[game.phaseDiscard.length - 1], laidPhases: game.laidPhases, playerList: pList, me: { name: name, ...p } };
             } else if (game.gameType === 'snakes') {
-                let pList = game.turnOrder.map(n => ({ name: n, pos: game.players[n].pos }));
+                let pList = game.turnOrder.map(n => ({ name: n, avatarUrl: game.players[n].avatarUrl, pos: game.players[n].pos }));
                 payload = { ...payload, playerList: pList, lastRoll: game.lastRoll, event: game.event };
             } else if (game.gameType === 'ludo') {
-                let pList = game.turnOrder.map(n => ({ name: n, color: game.players[n].color, pieces: game.players[n].pieces }));
+                let pList = game.turnOrder.map(n => ({ name: n, avatarUrl: game.players[n].avatarUrl, color: game.players[n].color, pieces: game.players[n].pieces }));
                 payload = { ...payload, playerList: pList, lastRoll: game.lastRoll };
             }
             io.to(p.socketId).emit('gameState', payload);
@@ -358,4 +387,4 @@ io.on('connection', (socket) => {
     }
 });
 
-server.listen(3000, () => console.log('Mega Hub Running!'));
+server.listen(3000, () => console.log('Mega Hub Running with Passcode Security!'));
